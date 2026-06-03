@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Optional, Iterator, Any
 from dataclasses import dataclass
 
+__version__ = "2.0.0"
+
 # ---- Import shared utilities from chat-manager.py -----------------------
 # Determine the script directory — works both in normal Python and in
 # PyInstaller --onefile bundles (where __file__ is inside a temp folder
@@ -1849,12 +1851,25 @@ def api_export_session(session_id):
 
 def _kill_existing():
     """Kill any process already listening on our port (prevents stale servers)."""
+    import socket
+    import subprocess as sp
+
+    # Quick socket check — if port is free, bail out immediately
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        import subprocess as sp
+        sock.bind(('127.0.0.1', _PORT))
+        sock.close()
+        return
+    except socket.error:
+        sock.close()
+
+    # Port is occupied — try netstat + taskkill
+    try:
         result = sp.run(['netstat', '-ano'], capture_output=True, text=True)
         pids = set()
         for line in result.stdout.splitlines():
-            if f':{_PORT} ' in line and ('127.0.0.1' in line or '0.0.0.0' in line):
+            if f':{_PORT}' in line and ('127.0.0.1' in line or '0.0.0.0' in line):
                 parts = line.strip().split()
                 if parts and parts[-1].isdigit():
                     pids.add(parts[-1])
@@ -1864,7 +1879,13 @@ def _kill_existing():
             except Exception:
                 pass
     except Exception:
-        pass
+        # Last resort: try PowerShell (handles non-English Windows)
+        try:
+            sp.run(['powershell', '-Command',
+                    f"Get-Process -Id (Get-NetTCPConnection -LocalPort {_PORT} -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force"],
+                   capture_output=True, timeout=10)
+        except Exception:
+            pass
 
 def main():
     _kill_existing()
@@ -1908,6 +1929,16 @@ def main():
 
     try:
         app.run(host='127.0.0.1', port=_PORT, debug=False)
+    except OSError as e:
+        # Port in use or other socket error — show a visible error since
+        # pythonw.exe has no console window.
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0,
+                f"端口 {_PORT} 被占用，请先关闭旧的 Chat Manager 进程。\n\n错误: {e}",
+                "Chat Manager 启动失败", 0x10)
+        except Exception:
+            pass
     finally:
         observer.stop()
         observer.join()
