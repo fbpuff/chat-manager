@@ -61,7 +61,6 @@ def _install_and_import_rich():
     import subprocess
     # In a PyInstaller bundle, sys.executable is the .exe itself — not python.
     # Running "<bundle>.exe -m pip install" would re-launch the app (fork bomb).
-    # Always resolve the real Python interpreter.
     python_exe = sys.executable
     if getattr(sys, 'frozen', False):
         for candidate in ['python', 'python3']:
@@ -69,6 +68,18 @@ def _install_and_import_rich():
             if found:
                 python_exe = found
                 break
+        else:
+            # PATH search failed — try common install paths
+            import os as _os
+            for base in [Path(_os.environ.get('LOCALAPPDATA', '')) / 'Programs' / 'Python',
+                         Path('C:\\Python313'), Path('C:\\Python312'), Path('C:\\Python311')]:
+                for exe in ['python.exe', 'python3.exe']:
+                    p = base / exe
+                    if p.exists():
+                        python_exe = str(p)
+                        break
+                if python_exe != sys.executable:
+                    break
     try:
         subprocess.check_call([python_exe, "-m", "pip", "install", "rich", "-q"],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -180,7 +191,8 @@ def build_session_index() -> dict[str, SessionMeta]:
                     human_date=format_timestamp(entry.get('timestamp', 0)),
                 )
     except (OSError, UnicodeDecodeError) as e:
-        print(f"Warning: could not read history file: {e}", file=sys.stderr)
+        if sys.stderr:
+            print(f"Warning: could not read history file: {e}", file=sys.stderr)
     return index
 
 def build_project_session_map() -> dict[str, set[str]]:
@@ -238,7 +250,8 @@ def read_transcript(path: Path) -> Iterator[dict]:
                     # Corrupt line; skip with a one-time warning
                     pass
     except (OSError, UnicodeDecodeError) as e:
-        print(f"Warning: error reading {path}: {e}", file=sys.stderr)
+        if sys.stderr:
+            print(f"Warning: error reading {path}: {e}", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # Text extraction

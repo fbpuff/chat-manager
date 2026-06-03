@@ -63,8 +63,9 @@ def _get_python_exe() -> str:
             p = base / exe
             if p.exists():
                 return str(p)
-    # Should never happen, but fall back to sys.executable
-    return sys.executable
+    # No Python found — return 'python' so the error is "python not found"
+    # rather than a recursive fork bomb re-launching the bundle .exe.
+    return 'python'
 
 _PYTHON_EXE = _get_python_exe()
 
@@ -89,8 +90,8 @@ except ImportError:
 # ---- App setup ---------------------------------------------------------
 app = Flask(__name__)
 _PORT = 9720
-_BASE_DIR = _SCRIPT_DIR
-_TITLES_FILE = _BASE_DIR / "titles.json"
+_TITLES_FILE = cm.get_claude_home() / "chat-manager" / "titles.json"
+_TITLES_FILE.parent.mkdir(parents=True, exist_ok=True)
 _sessions_cache: Optional[dict] = None
 _sessions_cache_time: float = 0.0
 
@@ -104,19 +105,19 @@ def _invalidate_sessions_cache():
 # ---- File system watcher for real-time updates -------------------------
 # 使用防抖机制，避免短时间内多次缓存失效
 _invalidate_timer: Optional[threading.Timer] = None
-_timer_lock = threading.Lock()
+_debounce_lock = threading.Lock()
 
 def _debounced_invalidate_cache():
     """防抖的缓存失效，1秒内只触发一次"""
     global _invalidate_timer
-    with _timer_lock:
+    with _debounce_lock:
         _invalidate_timer = None
     _invalidate_sessions_cache()
 
 def _schedule_invalidation():
     """安排延迟的缓存失效（防抖）"""
     global _invalidate_timer
-    with _timer_lock:
+    with _debounce_lock:
         if _invalidate_timer:
             _invalidate_timer.cancel()
         _invalidate_timer = threading.Timer(1.0, _debounced_invalidate_cache)
@@ -173,7 +174,9 @@ def _load_custom_titles() -> dict[str, str]:
 def _save_custom_titles(titles: dict[str, str]):
     global _titles_cache
     _titles_cache = titles
-    _TITLES_FILE.write_text(json.dumps(titles, ensure_ascii=False, indent=2), encoding='utf-8')
+    tmp_path = _TITLES_FILE.with_suffix('.tmp')
+    tmp_path.write_text(json.dumps(titles, ensure_ascii=False, indent=2), encoding='utf-8')
+    os.replace(tmp_path, _TITLES_FILE)  # atomic on Windows & POSIX
 
 def _resolve_title(sid: str, fallback: str, history_title: Optional[str] = None) -> str:
     """Resolve the best title from multiple sources.
@@ -783,7 +786,9 @@ function startCacheCheckTimer() {
                 const response = await fetch('/api/sessions?v=' + Date.now());
                 const data = await response.json();
                 const newCacheTimestamp = data.cache_invalidation_time || 0;
-                if (newCacheTimestamp !== lastCacheTimestamp) {
+                // Re-check renameInProgress AFTER the await — a rename may have
+                // started during the fetch and we must not clobber it.
+                if (newCacheTimestamp !== lastCacheTimestamp && !renameInProgress) {
                     refreshSessions();
                 }
             } catch (e) {
@@ -795,6 +800,10 @@ function startCacheCheckTimer() {
 
 // ---- Init ----
 async function refreshSessions() {
+    // Never refresh while a rename is in progress — it would destroy the
+    // inline edit input and leave renameInProgress stuck at true.
+    if (renameInProgress) return;
+
     sessionLoadFailed = false;
     const listEl = document.getElementById('session-list');
     listEl.innerHTML = '<div class="loading-msg">加载中…</div>';
@@ -813,8 +822,7 @@ async function refreshSessions() {
             if (updated && updated.title !== currentSessionMeta.title) {
                 currentSessionMeta.title = updated.title;
                 const titleEl = document.getElementById('conv-title');
-                if (titleEl && titleEl.children.length === 0) return; // nothing to update
-                if (titleEl) {
+                if (titleEl && titleEl.children.length > 0) {
                     titleEl.textContent = '';
                     const sp = document.createElement('span');
                     sp.className = 'editable-title';
@@ -1331,11 +1339,11 @@ refreshSessions();
 
 # ---- Auto-shutdown via heartbeat ------------------------------------------
 _shutdown_timer: Optional[threading.Timer] = None
-_timer_lock = threading.Lock()
+_shutdown_lock = threading.Lock()
 
 def _reset_shutdown_timer():
     global _shutdown_timer
-    with _timer_lock:
+    with _shutdown_lock:
         if _shutdown_timer:
             _shutdown_timer.cancel()
         _shutdown_timer = threading.Timer(35.0, _do_shutdown)
@@ -1343,6 +1351,8 @@ def _reset_shutdown_timer():
         _shutdown_timer.start()
 
 def _do_shutdown():
+    import atexit
+    atexit._run_exitfuncs()
     os._exit(0)
 
 
@@ -1356,14 +1366,10 @@ def api_heartbeat():
 @app.route('/api/shutdown', methods=['POST'])
 def api_shutdown():
     """Shut down the server."""
-    with _timer_lock:
+    with _shutdown_lock:
         if _shutdown_timer:
             _shutdown_timer.cancel()
-    try:
-        os._exit(0)
-    except Exception:
-        pass
-    return jsonify({'ok': True})
+    os._exit(0)
 
 @app.route('/')
 def index():
@@ -1403,7 +1409,7 @@ def api_sessions():
         if tpath:
             size_bytes = os.path.getsize(tpath)
             st = cm.quick_transcript_stats(tpath)
-            raw_title = st.title or (meta.first_prompt if meta else '(untitled)')
+            raw_title = st.title or ''
             title = _resolve_title(sid, raw_title, meta.first_prompt if meta else None)
             model = st.model or '?'
             msg_count = st.user_messages + st.assistant_messages
@@ -1798,7 +1804,7 @@ def api_export_session(session_id):
     proj = cm.find_project_for_session(session_id) or 'unknown'
 
     lines = []
-    raw_title = st.title or (meta.first_prompt if meta else 'Claude Code Session')
+    raw_title = st.title or ''
     title = _resolve_title(session_id, raw_title, meta.first_prompt if meta else None)
     lines.append(f'# {title}')
     lines.append('')
@@ -1848,7 +1854,7 @@ def _kill_existing():
         result = sp.run(['netstat', '-ano'], capture_output=True, text=True)
         pids = set()
         for line in result.stdout.splitlines():
-            if f':{_PORT}' in line and ('127.0.0.1' in line or '0.0.0.0' in line):
+            if f':{_PORT} ' in line and ('127.0.0.1' in line or '0.0.0.0' in line):
                 parts = line.strip().split()
                 if parts and parts[-1].isdigit():
                     pids.add(parts[-1])
@@ -1891,10 +1897,13 @@ def main():
     import atexit
     atexit.register(cleanup)
 
-    print(f"\n  Claude Code 对话管理器 — Web 界面")
-    print(f"  启动地址: http://127.0.0.1:{_PORT}")
-    print(f"  轻量级实时监控已启用（监听 history.jsonl 和 sessions）")
-    print(f"  关闭浏览器 35 秒后服务器自动退出，或点击「关闭服务器」按钮\n")
+    # In PyInstaller --windowed mode, sys.stdout is None — guard prints.
+    # In console mode, these provide a friendly startup message.
+    if sys.stdout:
+        print(f"\n  Claude Code 对话管理器 — Web 界面")
+        print(f"  启动地址: http://127.0.0.1:{_PORT}")
+        print(f"  轻量级实时监控已启用（监听 history.jsonl 和 sessions）")
+        print(f"  关闭浏览器 35 秒后服务器自动退出，或点击「关闭服务器」按钮\n")
     webbrowser.open(f'http://127.0.0.1:{_PORT}')
 
     try:
