@@ -42,12 +42,37 @@ _spec = importlib.util.spec_from_file_location("chat_manager", str(_cm_path))
 cm = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cm)
 
+# ---- Safe Python executable resolution ---------------------------------
+# In a PyInstaller bundle, sys.executable is the .exe itself, NOT python.exe.
+# Running "<bundle>.exe -m pip install ..." re-runs the bundled script instead
+# of installing packages, creating a fork bomb. Always resolve the real Python.
+def _get_python_exe() -> str:
+    """Return the real Python interpreter, even inside a PyInstaller bundle."""
+    # If NOT frozen (normal Python), sys.executable is fine
+    if not getattr(sys, 'frozen', False):
+        return sys.executable
+    # In a PyInstaller bundle, search for the system Python
+    for candidate in ['python', 'python3']:
+        found = shutil.which(candidate)
+        if found:
+            return found
+    # Last resort: try common install paths on Windows
+    for base in [Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs' / 'Python',
+                 Path('C:\\Python313'), Path('C:\\Python312'), Path('C:\\Python311')]:
+        for exe in ['python.exe', 'python3.exe']:
+            p = base / exe
+            if p.exists():
+                return str(p)
+    # Should never happen, but fall back to sys.executable
+    return sys.executable
+
+_PYTHON_EXE = _get_python_exe()
+
 # ---- Flask bootstrap (auto-install if missing) -------------------------
 try:
     from flask import Flask, jsonify, request, render_template_string, send_file
 except ImportError:
-    python_exe = sys.executable
-    subprocess.check_call([python_exe, "-m", "pip", "install", "flask", "-q"],
+    subprocess.check_call([_PYTHON_EXE, "-m", "pip", "install", "flask", "-q"],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     from flask import Flask, jsonify, request, render_template_string, send_file
 
@@ -56,8 +81,7 @@ try:
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
 except ImportError:
-    python_exe = sys.executable
-    subprocess.check_call([python_exe, "-m", "pip", "install", "watchdog", "-q"],
+    subprocess.check_call([_PYTHON_EXE, "-m", "pip", "install", "watchdog", "-q"],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler

@@ -59,7 +59,16 @@ def _try_import_rich() -> bool:
 
 def _install_and_import_rich():
     import subprocess
+    # In a PyInstaller bundle, sys.executable is the .exe itself — not python.
+    # Running "<bundle>.exe -m pip install" would re-launch the app (fork bomb).
+    # Always resolve the real Python interpreter.
     python_exe = sys.executable
+    if getattr(sys, 'frozen', False):
+        for candidate in ['python', 'python3']:
+            found = shutil.which(candidate)
+            if found:
+                python_exe = found
+                break
     try:
         subprocess.check_call([python_exe, "-m", "pip", "install", "rich", "-q"],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
