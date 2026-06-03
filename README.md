@@ -15,7 +15,7 @@ Claude Code 对话管理器 — 浏览、搜索、重命名、删除 Claude Code
 
 ### 方式 A：下载 EXE（无需 Python）
 
-从 [Releases](https://github.com/your-username/chat-manager/releases) 下载 `Chat-Manager.exe`，双击运行。
+从 [Releases](https://github.com/fbpuff/chat-manager/releases) 下载 `Chat-Manager.exe`，双击运行。
 
 > 浏览器可能会提示"此文件可能危险"→ 点击「保留」→「仍然运行」
 
@@ -23,7 +23,7 @@ Claude Code 对话管理器 — 浏览、搜索、重命名、删除 Claude Code
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/your-username/chat-manager.git
+git clone https://github.com/fbpuff/chat-manager.git
 # 或直接下载 ZIP 并解压到 ~/.claude/chat-manager/
 
 # 2. 安装依赖
