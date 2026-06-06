@@ -13,7 +13,7 @@ When the user invokes this skill:
 
 1. Ensure the server is running and open it (only ONE browser instance will open):
    ```powershell
-   if (Get-NetTCPConnection -LocalPort 9720 -ErrorAction SilentlyContinue) { Start-Process "http://127.0.0.1:9720" } else { Start-Process -WindowStyle Hidden -FilePath "pythonw.exe" -ArgumentList "C:\Users\fbpuf\.claude\chat-manager\chat-manager-web.py" }
+   if (-not (Get-NetTCPConnection -LocalPort 9720 -ErrorAction SilentlyContinue)) { Start-Process -WindowStyle Hidden -FilePath "pythonw.exe" -ArgumentList "C:\Users\fbpuf\.claude\chat-manager\chat-manager-web.py" }; Start-Process "http://127.0.0.1:9720"
    ```
 
 2. Tell the user: "Chat Manager 已启动 → http://127.0.0.1:9720"
