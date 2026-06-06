@@ -1925,7 +1925,6 @@ def main():
         print(f"  启动地址: http://127.0.0.1:{_PORT}")
         print(f"  轻量级实时监控已启用（监听 history.jsonl 和 sessions）")
         print(f"  关闭浏览器 35 秒后服务器自动退出，或点击「关闭服务器」按钮\n")
-    webbrowser.open(f'http://127.0.0.1:{_PORT}')
 
     try:
         app.run(host='127.0.0.1', port=_PORT, debug=False)
